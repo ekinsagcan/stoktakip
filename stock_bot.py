@@ -20,7 +20,7 @@ load_dotenv()
 
 # Bot token’ını environment variable’dan al
 
-BOT_TOKEN = os.getenv(‘BOT_TOKEN’)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 if not BOT_TOKEN:
 raise ValueError(“BOT_TOKEN environment variable bulunamadı! Lütfen .env dosyasını oluşturun veya BOT_TOKEN’ı sistem environment variable’ı olarak tanımlayın.”)
