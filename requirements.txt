@@ -1,0 +1,36 @@
+# Telegram Bot Framework
+
+python-telegram-bot==20.7
+
+# HTTP İstekleri için
+
+aiohttp==3.9.1
+requests==2.31.0
+
+# HTML Parsing için
+
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# Veritabanı
+
+sqlite3
+
+# Async işlemler
+
+asyncio
+
+# Logging ve sistem
+
+logging
+datetime
+json
+re
+threading
+time
+typing
+
+# Ek yardımcı kütüphaneler
+
+schedule==1.2.0
+python-dotenv==1.0.0
