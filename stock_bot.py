@@ -155,7 +155,7 @@ cursor.execute('''
 INSERT OR REPLACE INTO tracked_products
 (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, last_status)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-''', (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, ‘unknown’))
+''', (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, 'unknown'))
 conn.commit()
 return True
 except Exception as e:
