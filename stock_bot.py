@@ -1,4 +1,4 @@
-from telegram.ext import Updater, CommandHandler, MessageHandler, filters # 'Filters' -> 'filters' olarak değiştirildi
+from telegram.ext import Application, CommandHandler, MessageHandler, filters # Değişiklik: Updater ve Dispatcher yerine Application
 from apscheduler.schedulers.background import BackgroundScheduler
 from bs4 import BeautifulSoup
 import logging
@@ -15,13 +15,14 @@ class CZaraStockBot:
     def __init__(self):
         logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-        # Token'ı ortam değişkeninden al
+        # Bot token'ı ortam değişkeninden alınıyor
         bot_token = os.environ.get('BOT_TOKEN')
         if not bot_token:
             raise ValueError("BOT_TOKEN ortam değişkeni ayarlanmamış! Lütfen bot token'ınızı ayarlayın.")
 
-        self.updater = Updater(token=bot_token, use_context=True) # use_context=True eklendi
-        self.bot = telegram.Bot(token=bot_token)
+        # python-telegram-bot v20+ için Application kullanılıyor
+        self.application = Application.builder().token(bot_token).build()
+        self.bot = self.application.bot # Bot nesnesine bu şekilde erişiliyor
 
         self.datalist = []
         self.dataset = [' ', ' ', 0]
@@ -35,26 +36,24 @@ class CZaraStockBot:
         except FileNotFoundError:
             pass # save.dat dosyası yoksa sessizce devam et
 
-        self.dispatcher = self.updater.dispatcher
-        self.dispatcher.add_handler(CommandHandler('show', self.cmdshow))
-        self.dispatcher.add_handler(CommandHandler('del', self.cmddel))
-        self.dispatcher.add_handler(CommandHandler('delall', self.cmddelall))
-        self.dispatcher.add_handler(CommandHandler('save', self.cmdsave))
-        self.dispatcher.add_handler(CommandHandler('help', self.cmdhelp))
-        self.dispatcher.add_handler(CommandHandler('start', self.cmdstart))
-        self.dispatcher.add_handler(CommandHandler('stop', self.cmdstop))
-        self.dispatcher.add_handler(CommandHandler('interval', self.cmdinterval))
-        self.updater.start_polling()
-
-        # 'Filters' yerine 'filters' kullanıldı
-        echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), self.echo)
-        self.dispatcher.add_handler(echo_handler)
+        # Handler'lar Application'a ekleniyor
+        self.application.add_handler(CommandHandler('show', self.cmdshow))
+        self.application.add_handler(CommandHandler('del', self.cmddel))
+        self.application.add_handler(CommandHandler('delall', self.cmddelall))
+        self.application.add_handler(CommandHandler('save', self.cmdsave))
+        self.application.add_handler(CommandHandler('help', self.cmdhelp))
+        self.application.add_handler(CommandHandler('start', self.cmdstart))
+        self.application.add_handler(CommandHandler('stop', self.cmdstop))
+        self.application.add_handler(CommandHandler('interval', self.cmdinterval))
+        
+        # filters.TEXT & (~filters.COMMAND) ile komut olmayan metin mesajları yakalanıyor
+        self.application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.echo))
 
         self.sched = BackgroundScheduler()
         self.sched.start()
 
-    def cmdshow(self, update, context): # context parametresi eklendi
-        if not self.datalist: # len(self.datalist) == 0 yerine
+    def cmdshow(self, update, context):
+        if not self.datalist:
             context.bot.send_message(chat_id=update.effective_chat.id, text='Takip edilen ürün bulunmuyor.')
             return
         
@@ -64,7 +63,7 @@ class CZaraStockBot:
         context.bot.send_message(chat_id=update.effective_chat.id, text=message_text)
 
 
-    def cmddel(self, update, context): # context parametresi eklendi
+    def cmddel(self, update, context):
         context.bot.send_message(chat_id=update.effective_chat.id, text='Silmek istediğiniz ürünün URL\'sini girin:')
         self.insertmode = 1
 
@@ -78,11 +77,11 @@ class CZaraStockBot:
         self.insertmode = 0
         return deleted
 
-    def cmddelall(self, update, context): # context parametresi eklendi
+    def cmddelall(self, update, context):
         self.datalist.clear()
         context.bot.send_message(chat_id=update.effective_chat.id, text='Tüm takip edilen ürünler silindi.')
 
-    def cmdsave(self, update, context): # context parametresi eklendi
+    def cmdsave(self, update, context):
         try:
             with open('save.dat', 'wb') as f:
                 pickle.dump(self.datalist, f)
@@ -90,16 +89,16 @@ class CZaraStockBot:
         except Exception as e:
             context.bot.send_message(chat_id=update.effective_chat.id, text=f'Kaydetme sırasında bir hata oluştu: {e}')
 
-    def cmdhelp(self, update, context): # context parametresi eklendi
+    def cmdhelp(self, update, context):
         msg = (
             '**Nasıl Kullanılır:**\n'
             '1. Zara web sitesinden takip etmek istediğiniz ürünün sayfasına gidin.\n'
             '2. Ürünün **URL\'sini** kopyalayıp sohbete yapıştırın ve gönderin.\n'
-            '3. Bot "Bedeni girin:" mesajını gönderdiğinde, web sayfasından takip etmek istediğiniz **bedeni** (örneğin "KR 270") kopyalayıp sohbete yapıştırın ve gönderin.\n'
+            '3. Bot "Bedeni girin:" mesajını gönderdiğinde, web sayfasından takip etmek istediğiniz **bedeni** (örneğin "KR 270" veya "EU S") kopyalayıp sohbete yapıştırın ve gönderin.\n'
             '4. Bot mevcut stok durumunu kontrol ettikten sonra ürünü takip listenize ekleyecektir.\n\n'
             '**Komutlar:**\n'
             '**/show**: Takip ettiğiniz tüm ürünleri listeler.\n'
-            '**/del**: Belirli bir ürünü URL ve bedenle siler.\n'
+            '**/del**: Belirli bir ürünü URL ile siler.\n'
             '**/delall**: Tüm takip edilen ürünleri siler.\n'
             '**/save**: Mevcut takip listesini dosyaya kaydeder (bot yeniden başlatıldığında kaybolmaması için).\n'
             '**/help**: Bu yardım mesajını gösterir.\n'
@@ -109,21 +108,23 @@ class CZaraStockBot:
         )
         context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
 
-    def cmdstart(self, update, context): # context parametresi eklendi
+    def cmdstart(self, update, context):
         if self.datalist:
             msg = f'{self.interval} saniye aralıklarla stok kontrolü başlatılıyor.'
             self.sched.remove_all_jobs() # Önceki tüm işleri temizle
             self.sched.add_job(self.job_crawling, 'interval', seconds=self.interval)
-            # Zamanlayıcı zaten çalışıyorsa durdurup yeniden başlatmak yerine, sadece işi ekleyip emin olmak için resume diyebiliriz.
+            
+            # Zamanlayıcıyı başlatma kontrolü
             if not self.sched.running:
                 self.sched.start()
+            
             context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
         else:
             msg = 'Takip listeniz boş. Stok kontrolü başlatılamadı.'
             context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
 
-    def cmdstop(self, update, context): # context parametresi eklendi
-        if self.sched.running: # self.sched.state == self.STATE_RUNNING yerine
+    def cmdstop(self, update, context):
+        if self.sched.running:
             msg = 'Stok kontrolü durduruluyor.'
             context.bot.send_message(chat_id=update.effective_chat.id, text=msg)
             self.remove()
@@ -134,15 +135,15 @@ class CZaraStockBot:
     def remove(self):
         if self.sched.running:
             self.sched.remove_all_jobs()
-            # Eğer başka bir iş yoksa zamanlayıcıyı tamamen durdurmak daha mantıklı olabilir
-            # self.sched.shutdown(wait=False) # Eğer tüm işler kaldırıldıktan sonra tamamen durdurmak isterseniz
+            # Opsiyonel: Eğer tüm işler kaldırıldıktan sonra zamanlayıcıyı tamamen durdurmak isterseniz
+            # self.sched.shutdown(wait=False) 
 
-    def cmdinterval(self, update, context): # context parametresi eklendi
+    def cmdinterval(self, update, context):
         self.remove()
         self.insertmode = 2
         context.bot.send_message(chat_id=update.effective_chat.id, text='Stok kontrol aralığını (saniye cinsinden) girin:')
 
-    def echo(self, update, context): # context parametresi eklendi
+    def echo(self, update, context):
         chat_id = update.effective_chat.id
         user_message = update.message.text.strip()
 
@@ -157,7 +158,7 @@ class CZaraStockBot:
                     context.bot.send_message(chat_id=chat_id, text='Geçerli bir saniye değeri girin (pozitif bir tam sayı).')
             except ValueError:
                 context.bot.send_message(chat_id=chat_id, text='Geçersiz giriş. Lütfen sadece sayı girin.')
-            return # İşlemi tamamla
+            return
 
         elif user_message.startswith('http'): # URL girişi
             self.remove() # URL girişi yapıldığında mevcut job'ları durdur
@@ -165,8 +166,8 @@ class CZaraStockBot:
             if self.insertmode == 0: # Yeni ürün ekleme modu
                 self.dataset = [' ', ' ', 0] # Her zaman yeni bir dataset başlat
                 self.dataset[0] = user_message
-                context.bot.send_message(chat_id=chat_id, text='Bedeni girin (örn: KR 270):')
-                self.insertmode = 0 # Modu hala URL/Beden girişi için sıfırda tut
+                context.bot.send_message(chat_id=chat_id, text='Bedeni girin (örn: KR 270 veya EU S):')
+                # insertmode 0 olarak kalır, bir sonraki mesajın beden olduğunu bekleriz.
             elif self.insertmode == 1: # Silme modu
                 if self.deldata(chat_id, user_message):
                     context.bot.send_message(chat_id=chat_id, text='Ürün başarıyla silindi.')
@@ -176,19 +177,19 @@ class CZaraStockBot:
             else: # Beklenmedik durum
                 context.bot.send_message(chat_id=chat_id, text='Geçersiz giriş. Lütfen yardım için /help yazın.')
 
-        elif user_message.upper().startswith('KR') or user_message.upper().startswith('EU'): # Beden girişi (KR veya EU ile başlayan)
+        elif user_message.upper().startswith('KR') or user_message.upper().startswith('EU') or len(user_message) <= 5: # Beden girişi (KR/EU ile başlayan veya kısa metin)
             if self.dataset[0] == ' ': # URL girilmeden beden girilmişse
                 context.bot.send_message(chat_id=chat_id, text='Önce ürünün URL\'sini girmeniz gerekiyor.')
                 return
 
             self.dataset[1] = user_message
             self.dataset[2] = chat_id
-            context.bot.send_message(chat_id=chat_id, text=f'{user_message} için mevcut stok kontrol ediliyor...')
+            context.bot.send_message(chat_id=chat_id, text=f'"{user_message}" bedeni için mevcut stok kontrol ediliyor...')
             
             product_name = self.check_stock(self.dataset, mode=0) # Yeni eklerken sadece kontrol et, bildirim gönderme
 
             if product_name: # Ürün adı döndüyse, yani URL geçerliyse
-                # Duplicate check: Aynı URL ve bedene sahip ürün zaten var mı?
+                # Duplicate check: Aynı URL ve bedene sahip ürün zaten var mu?
                 is_duplicate = False
                 for item in self.datalist:
                     if item[0] == self.dataset[0] and item[1] == self.dataset[1] and item[2] == self.dataset[2]:
@@ -201,7 +202,7 @@ class CZaraStockBot:
                 else:
                     msg = f'**{product_name}** ({self.dataset[1]}) zaten takip listenizde mevcut.'
             else:
-                msg = 'Ürün eklenemedi. URL veya beden hatalı olabilir. Lütfen tekrar deneyin ya da yardım için /help yazın.'
+                msg = 'Ürün eklenemedi. URL veya beden hatalı olabilir ya da ürün stokta olmayabilir. Lütfen tekrar deneyin ya da yardım için /help yazın.'
             
             context.bot.send_message(chat_id=chat_id, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
             self.insertmode = 0 # Modu sıfırla
@@ -227,28 +228,33 @@ class CZaraStockBot:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.88 Safari/537.36'
             }
             html = requests.get(url, headers=headers, timeout=10) # Timeout eklendi
-            html.raise_for_status() # HTTP hataları için istisna fırlatır
+            html.raise_for_status() # HTTP hataları için istisna fırlatır (4xx veya 5xx durum kodlarında)
 
             soup = BeautifulSoup(html.text, 'html.parser')
             
             # Ürün adını bulmaya çalış
-            name_tag = soup.find('h1', class_='product-detail-info__name') # Zara için yaygın bir etiket
+            # Zara'nın HTML yapısı değiştikçe bu seçiciler de değişebilir.
+            name_tag = soup.find('h1', class_='product-detail-info__name') 
             if not name_tag:
-                name_tag = soup.find('h1') # Genel h1 etiketi
+                name_tag = soup.find('h1', {'data-qa-action': 'product-detail-title'}) # Alternatif seçici
+            if not name_tag:
+                name_tag = soup.find('h1') # En genel h1 etiketi
             
             if name_tag:
                 product_name = name_tag.get_text(strip=True)
-            
+            else:
+                logging.warning(f"Ürün adı bulunamadı: {url}") # Ürün adı bulunamazsa logla
+
             # Beden etiketini bulmaya çalış
-            # Zara'nın HTML yapısı sık değişebilir. Genellikle <select> içindeki <option> etiketleri kullanılır.
-            # Örneğin: <option value="BEDEN_DEĞERİ" data-is-available="true/false">Beden Adı</option>
-            # Veya düğmeler: <button data-size-value="BEDEN_DEĞERİ" data-stock-status="in-stock/out-of-stock">Beden Adı</button>
-            # Bu örnekte 'value' özniteliğine bakılıyor, bu Zara için hala geçerli olabilir.
-            tag = soup.find(value=size) 
-            
-            # Alternatif beden bulma yöntemleri (Zara değişirse denenebilir):
-            # tag = soup.find('span', text=size) # Bedeni metin olarak arama
-            # tag = soup.find('button', {'data-size-name': size}) # Eğer beden bilgisi data özniteliğinde ise
+            # Zara'nın web sitesi genellikle <option> elementlerinde `value` attribute'u ile bedeni tutar.
+            # Alternatif olarak `data-size-value` veya doğrudan metin içerebilir.
+            tag = soup.find('option', value=size)
+            if not tag:
+                tag = soup.find('span', string=size) # Span etiketinde bedeni arama
+            if not tag:
+                # Daha esnek bir arama için: bedeni içeren herhangi bir etiketi bulmaya çalış
+                tag = soup.find(lambda tag: tag.name in ['option', 'span', 'div', 'button'] and size in tag.get_text())
+
 
             if tag:
                 is_disabled = False
@@ -260,22 +266,33 @@ class CZaraStockBot:
                 # Örneğin: if tag.get('data-stock-status') == 'out-of-stock':
 
                 if is_disabled:
-                    if mode == 0: # Yeni ekleme anında stokta yoksa
-                        self.bot.send_message(chat_id=user_chat_id, text=f'**{product_name}** ({size}) şu anda stokta yok.', parse_mode=telegram.ParseMode.MARKDOWN)
+                    if mode == 0: # Yeni ekleme anında stokta yoksa özel mesaj (periyodik kontrolde bildirim yok)
+                        self.bot.send_message(chat_id=user_chat_id, text=f'**{product_name or "Ürün"}** ({size}) şu anda stokta yok. Stok geldiğinde bildireceğim.', parse_mode=telegram.ParseMode.MARKDOWN)
+                    # Periyodik kontrolde stok yoksa sessiz kal, stok gelince bildirim gönder.
                 else: # Stokta varsa
-                    self.bot.send_message(chat_id=user_chat_id, text=f'**{product_name}** ({size}) için stok bulundu!\nÜrün linki: {url}', parse_mode=telegram.ParseMode.MARKDOWN)
+                    self.bot.send_message(chat_id=user_chat_id, text=f'**{product_name or "Ürün"}** ({size}) için **STOK BULUNDU!**\nÜrün linki: {url}', parse_mode=telegram.ParseMode.MARKDOWN)
             else:
-                self.bot.send_message(chat_id=user_chat_id, text=f'Belirtilen beden ({size}) bulunamadı veya ürün yapısı değişmiş olabilir. URL: {url}', parse_mode=telegram.ParseMode.MARKDOWN)
+                self.bot.send_message(chat_id=user_chat_id, text=f'Belirtilen beden (**{size}**) bulunamadı veya ürün yapısı değişmiş olabilir. Lütfen URL\'yi ve bedeni kontrol edin. URL: {url}', parse_mode=telegram.ParseMode.MARKDOWN)
 
+        except requests.exceptions.HTTPError as e:
+            logging.error(f"HTTP Hatası ({e.response.status_code}) URL: {url} - {e}")
+            self.bot.send_message(chat_id=user_chat_id, text=f'Ürüne erişirken HTTP hatası oluştu ({e.response.status_code}). URL\'yi kontrol edin: {url}')
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"Bağlantı Hatası URL: {url} - {e}")
+            self.bot.send_message(chat_id=user_chat_id, text=f'Ürüne bağlanırken hata oluştu. İnternet bağlantınızı veya URL\'yi kontrol edin: {url}')
+        except requests.exceptions.Timeout as e:
+            logging.error(f"Zaman Aşımı Hatası URL: {url} - {e}")
+            self.bot.send_message(chat_id=user_chat_id, text=f'Ürüne erişim zaman aşımına uğradı. URL\'yi kontrol edin veya daha sonra tekrar deneyin: {url}')
         except requests.exceptions.RequestException as e:
-            logging.error(f"URL'ye erişim hatası {url}: {e}")
-            if mode == 1: # Periyodik kontrolde hata olursa bildir
-                 self.bot.send_message(chat_id=user_chat_id, text=f'URL\'ye erişim hatası: {url}. Lütfen URL\'yi kontrol edin. Hata: {e}')
+            logging.error(f"Genel İstek Hatası URL: {url} - {e}")
+            self.bot.send_message(chat_id=user_chat_id, text=f'Ürüne erişirken beklenmeyen bir hata oluştu: {e}. Lütfen URL\'yi kontrol edin: {url}')
         except Exception as e:
-            logging.error(f"Stok kontrolü sırasında beklenmeyen hata: {e}")
-            if mode == 1: # Periyodik kontrolde hata olursa bildir
-                self.bot.send_message(chat_id=user_chat_id, text=f'Stok kontrolü sırasında bir hata oluştu: {e}. Lütfen yardım için /help yazın.')
+            logging.error(f"Stok kontrolü sırasında beklenmeyen hata: {e} for URL: {url}")
+            self.bot.send_message(chat_id=user_chat_id, text=f'Stok kontrolü sırasında bir hata oluştu: {e}. Lütfen yardım için /help yazın.')
 
         return product_name
 
+# Botun başlatılması
 jarabot = CZaraStockBot()
+jarabot.application.run_polling() # Botu çalıştırmak için bu satır ekleniyor
+
