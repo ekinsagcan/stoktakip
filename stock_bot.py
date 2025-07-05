@@ -19,7 +19,7 @@ BOT_TOKEN = "7602002058:AAFLWeRECvcJ8gQl_c5cvJ9drXZCutJPEFQ"
 # Veritabanı kurulumu
 
 def init_database():
-conn = sqlite3.connect(‘stock_tracker.db’)
+conn = sqlite3.connect('stock_tracker.db')
 cursor = conn.cursor()
 cursor.execute(’’’
 CREATE TABLE IF NOT EXISTS tracked_products (
