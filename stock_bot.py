@@ -21,7 +21,7 @@ BOT_TOKEN = "7602002058:AAFLWeRECvcJ8gQl_c5cvJ9drXZCutJPEFQ"
 def init_database():
 conn = sqlite3.connect('stock_tracker.db')
 cursor = conn.cursor()
-cursor.execute(’’’
+cursor.execute('''
 CREATE TABLE IF NOT EXISTS tracked_products (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 user_id INTEGER,
