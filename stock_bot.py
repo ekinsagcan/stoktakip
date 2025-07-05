@@ -28,7 +28,8 @@ def init_database():
         last_checked TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, product_url)
-    ''')
+    )
+    ''') # Closing parenthesis added for the CREATE TABLE statement
     conn.commit()
     conn.close()
 
@@ -36,7 +37,11 @@ def init_database():
 class StockChecker:
     def __init__(self):
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9,tr;q=0.8', # Add Accept-Language for better response
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+            'Connection': 'keep-alive'
         }
 
     async def check_stock(self, url: str, selector: str = None, 
@@ -57,57 +62,116 @@ class StockChecker:
                             'status_text': stock_status['status_text'],
                             'price': stock_status.get('price', 'N/A')
                         }
+                    logging.warning(f"Failed to fetch {url}: HTTP {response.status}")
                     return {'success': False, 'error': f'HTTP {response.status}'}
+        except aiohttp.ClientError as e:
+            logging.error(f"Network error accessing {url}: {e}")
+            return {'success': False, 'error': f'Network error: {e}'}
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout accessing {url}")
+            return {'success': False, 'error': 'Timeout error'}
         except Exception as e:
+            logging.error(f"Error checking stock for {url}: {e}")
             return {'success': False, 'error': str(e)}
 
     def _analyze_stock_status(self, soup, selector=None, 
                             in_stock_keywords=None, out_of_stock_keywords=None):
-        default_in_stock = ['stokta', 'mevcut', 'satın al', 'sepete ekle', 
-                          'add to cart', 'buy now', 'in stock']
-        default_out_of_stock = ['stokta yok', 'tükendi', 'mevcut değil', 
-                              'out of stock', 'sold out', 'unavailable']
+        # Default keywords, more comprehensive and specific
+        default_in_stock = ['sepete ekle', 'add to cart', 'in stock', 'stokta', 'satın al', 'hemen al']
+        default_out_of_stock = ['stokta yok', 'tükendi', 'mevcut değil', 'out of stock', 'sold out', 'unavailable', 'tükenmek üzere', 'coming soon', 'notify me']
         
-        in_stock_keywords = in_stock_keywords or default_in_stock
-        out_of_stock_keywords = out_of_stock_keywords or default_out_of_stock
+        # Use provided keywords if any, otherwise use defaults
+        in_stock_keywords = [k.lower() for k in (in_stock_keywords or default_in_stock)]
+        out_of_stock_keywords = [k.lower() for k in (out_of_stock_keywords or default_out_of_stock)]
         
+        # Look for specific elements first
+        # For Zara, "Add to Bag" button or similar is a strong indicator
+        in_stock_elements = soup.select('button.add-to-cart-button, button.product-actions-add-to-cart-button, button[data-qa-action="add-to-cart"]')
+        out_of_stock_elements = soup.select('.product-availability__message--out-of-stock, .availability-status--out-of-stock, .stock-error-message') # Add specific selectors for common out of stock messages
+
+        # Check for in-stock elements
+        if any(elem for elem in in_stock_elements if "add to" in elem.get_text().lower() or "sepete ekle" in elem.get_text().lower()):
+            price = self._extract_price(soup)
+            return {'in_stock': True, 'status_text': 'Stokta mevcut (Sepete Ekle butonu bulundu)', 'price': price}
+
+        # Check for out-of-stock elements
+        if any(elem for elem in out_of_stock_elements if "out of stock" in elem.get_text().lower() or "stokta yok" in elem.get_text().lower() or "tükendi" in elem.get_text().lower()):
+            price = self._extract_price(soup)
+            return {'in_stock': False, 'status_text': 'Stokta yok (Belirli element bulundu)', 'price': price}
+
+
+        # If specific elements not found, check page text (less reliable)
         page_text = soup.get_text().lower()
         
+        target_text = page_text
         if selector:
             target_elements = soup.select(selector)
-            target_text = ' '.join([elem.get_text().lower() for elem in target_elements]) if target_elements else page_text
-        else:
-            target_text = page_text
+            if target_elements:
+                target_text = ' '.join([elem.get_text().lower() for elem in target_elements])
+            
+        # Prioritize out-of-stock keywords
+        out_of_stock_found = any(keyword in target_text for keyword in out_of_stock_keywords)
+        if out_of_stock_found:
+            price = self._extract_price(soup)
+            return {'in_stock': False, 'status_text': 'Stokta yok (Sayfa metninde bulundu)', 'price': price}
+
+        in_stock_found = any(keyword in target_text for keyword in in_stock_keywords)
+        if in_stock_found:
+            price = self._extract_price(soup)
+            return {'in_stock': True, 'status_text': 'Stokta mevcut (Sayfa metninde bulundu)', 'price': price}
         
-        in_stock_found = any(keyword.lower() in target_text for keyword in in_stock_keywords)
-        out_of_stock_found = any(keyword.lower() in target_text for keyword in out_of_stock_keywords)
-        
+        # Fallback if no clear keywords found, assume uncertain or potentially in stock if price is found
         price = self._extract_price(soup)
+        if price != 'N/A':
+            return {'in_stock': True, 'status_text': 'Muhtemelen stokta (Fiyat bulundu)', 'price': price}
         
-        if in_stock_found and not out_of_stock_found:
-            return {'in_stock': True, 'status_text': 'Stokta mevcut', 'price': price}
-        elif out_of_stock_found:
-            return {'in_stock': False, 'status_text': 'Stokta yok', 'price': price}
-        else:
-            if any(word in target_text for word in ['price', 'fiyat', '₺', '$', '€']):
-                return {'in_stock': True, 'status_text': 'Muhtemelen stokta', 'price': price}
-            return {'in_stock': False, 'status_text': 'Stok durumu belirsiz', 'price': price}
+        return {'in_stock': False, 'status_text': 'Stok durumu belirsiz (Hiçbir gösterge bulunamadı)', 'price': 'N/A'}
+
 
     def _extract_price(self, soup):
+        # More specific price selectors. Zara often uses span with data-qa-action="product-price" or similar
         price_selectors = [
+            'span.money-amount__main', # Common Zara price selector
+            '[data-qa-action="product-price"]', # Another potential Zara price selector
             '.price', '.fiyat', '[class*="price"]', '[class*="fiyat"]',
-            '.amount', '.cost', '[data-testid*="price"]'
+            '.amount', '.cost', '[data-testid*="price"]',
+            'div.product-price span', # Generic price within a div
+            'span[itemprop="price"]', # Schema.org price
+            'meta[itemprop="price"]' # Schema.org price in meta tag
         ]
         
         for selector in price_selectors:
             elements = soup.select(selector)
             for element in elements:
                 text = element.get_text().strip()
-                if any(currency in text for currency in ['₺', '$', '€', 'TL']):
-                    return text
+                # Check for currency symbols or numbers
+                if any(currency in text for currency in ['₺', '$', '€', 'TL', 'USD', 'EUR']) or any(char.isdigit() for char in text):
+                    # Clean up the price text
+                    price = ''.join(filter(lambda x: x.isdigit() or x in [',', '.'], text))
+                    if price:
+                        return text # Return original text to keep currency symbol
+        
+        # Try to find price in script tags (JSON-LD or other embedded data)
+        try:
+            for script in soup.find_all('script', type='application/ld+json'):
+                import json
+                data = json.loads(script.string)
+                if isinstance(data, list):
+                    for item in data:
+                        if item.get('@type') == 'Product' and item.get('offers') and item['offers'].get('price'):
+                            price = item['offers']['price']
+                            currency = item['offers'].get('priceCurrency', '')
+                            return f"{price} {currency}".strip()
+                elif data.get('@type') == 'Product' and data.get('offers') and data['offers'].get('price'):
+                    price = data['offers']['price']
+                    currency = data['offers'].get('priceCurrency', '')
+                    return f"{price} {currency}".strip()
+        except Exception as e:
+            logging.debug(f"Error parsing JSON-LD for price: {e}")
+
         return 'N/A'
 
-# Veritabanı işlemleri
+# Veritabanı işlemleri (unchanged)
 def save_tracked_product(user_id: int, product_name: str, product_url: str, 
                         selector: str = None, in_stock_keywords: str = None, 
                         out_of_stock_keywords: str = None):
@@ -154,7 +218,7 @@ def delete_tracked_product(user_id: int, product_id: int):
     conn.commit()
     conn.close()
 
-# Bot komutları
+# Bot komutları (unchanged, except for the fix to the add_product command for better argument handling)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
     🎉 **Stok Takip Botu'na Hoş Geldiniz!**
@@ -174,18 +238,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
 async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
+    # This part needs to be more flexible for arguments
+    args = context.args
+    if len(args) < 2:
         await update.message.reply_text(
-            "Kullanım: /ekle <ürün_adı> <url>\nÖrnek: /ekle iPhone https://example.com/iphone",
+            "Kullanım: /ekle <ürün_adı> <url> [css_selector] [stok_kelimeleri_virgülle_ayrılmış] [stokta_olmayan_kelimeleri_virgülle_ayrılmış]\n"
+            "Örnek: /ekle iPhone https://example.com/iphone\n"
+            "Örnek (gelişmiş): /ekle iPhone https://example.com .product-stock 'stokta,var' 'tükendi,yok'",
             parse_mode='Markdown'
         )
         return
 
-    product_name = context.args[0]
-    product_url = context.args[1]
-    selector = context.args[2] if len(context.args) > 2 else None
-    in_stock_keywords = context.args[3] if len(context.args) > 3 else None
-    out_of_stock_keywords = context.args[4] if len(context.args) > 4 else None
+    product_name = args[0]
+    product_url = args[1]
+    selector = args[2] if len(args) > 2 else None
+    in_stock_keywords = args[3] if len(args) > 3 else None
+    out_of_stock_keywords = args[4] if len(args) > 4 else None
 
     if not product_url.startswith(('http://', 'https://')):
         await update.message.reply_text("⚠ Geçerli bir URL girin (http:// veya https:// ile başlamalı)")
@@ -204,9 +272,12 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if result['success']:
-            status = "✅ Stokta" if result['in_stock'] else "⚠ Stokta yok"
+            status_emoji = "✅" if result['in_stock'] else "⚠"
             await update.message.reply_text(
-                f"{status}\nDurum: {result['status_text']}\nFiyat: {result['price']}"
+                f"**Anlık Durum Kontrolü:**\n"
+                f"{status_emoji} {result['status_text']}\n"
+                f"💰 Fiyat: {result['price']}",
+                parse_mode='Markdown'
             )
         else:
             await update.message.reply_text(f"⛔ Kontrol başarısız: {result['error']}")
@@ -222,9 +293,12 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = "📋 **Takip Edilen Ürünler:**\n\n"
     for product in products:
         product_id, _, name, url, _, _, _, last_status, last_checked, _ = product
-        status = "✅" if last_status == 'in_stock' else "⚠" if last_status == 'out_of_stock' else "❓"
+        status_emoji = "✅" if last_status == 'in_stock' else "⚠" if last_status == 'out_of_stock' else "❓"
         last_checked_str = datetime.strptime(last_checked, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M') if last_checked else "Bilinmiyor"
-        message += f"{status} {name}\nID: {product_id}\nSon kontrol: {last_checked_str}\nURL: {url[:50]}...\n\n"
+        message += f"{status_emoji} {name}\n"
+        message += f"ID: `{product_id}`\n" # Use backticks for ID to make it monospace
+        message += f"Son kontrol: {last_checked_str}\n"
+        message += f"URL: {url[:50]}...\n\n"
 
     keyboard = [[InlineKeyboardButton("🗑 Ürün Sil", callback_data="delete_menu")]]
     await update.message.reply_text(message, 
@@ -241,7 +315,7 @@ async def delete_product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     keyboard = [
-        [InlineKeyboardButton(f"🗑 {name}", callback_data=f"delete_{product_id}")]
+        [InlineKeyboardButton(f"🗑 {name} (ID: {product_id})", callback_data=f"delete_{product_id}")]
         for product_id, _, name, *_ in products
     ]
     keyboard.append([InlineKeyboardButton("« Geri", callback_data="back_to_list")])
@@ -274,13 +348,16 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if result['success']:
-            status = "✅" if result['in_stock'] else "⚠"
+            status_emoji = "✅" if result['in_stock'] else "⚠"
             await update.message.reply_text(
-                f"{status} {name}\nDurum: {result['status_text']}\nFiyat: {result['price']}"
+                f"{status_emoji} **{name}**\n"
+                f"Durum: {result['status_text']}\n"
+                f"Fiyat: {result['price']}",
+                parse_mode='Markdown'
             )
             update_product_status(product_id, 'in_stock' if result['in_stock'] else 'out_of_stock')
         else:
-            await update.message.reply_text(f"⚠ {name} - Kontrol başarısız: {result['error']}")
+            await update.message.reply_text(f"⚠ **{name}** - Kontrol başarısız: {result['error']}", parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -294,8 +371,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     • /durum - Anlık stok kontrolü
 
     **Gelişmiş Kullanım:**
-    /ekle <ürün_adı> <url> <css_selector> <stok_kelimeleri> <stokta_olmayan_kelimeler>
-    Örnek: /ekle iPhone https://example.com .stock-status "stokta,var" "tükendi,yok"
+    `/ekle <ürün_adı> <url> [css_selector] [stok_kelimeleri_virgülle_ayrılmış] [stokta_olmayan_kelimeleri_virgülle_ayrılmış]`
+    Örnek: `/ekle iPhone https://example.com .stock-status "stokta,var" "tükendi,yok"`
+
+    CSS Selector ve Kelimeler opsiyoneldir. Bot varsayılan olarak en yaygın durumları kontrol etmeye çalışır. Ancak, belirli bir site için daha doğru sonuçlar almak isterseniz bu parametreleri kullanabilirsiniz.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -340,7 +419,7 @@ async def stock_monitoring_loop(application):
                                 disable_web_page_preview=True
                             )
                         except Exception as e:
-                            logging.error(f"Bildirim gönderilemedi: {e}")
+                            logging.error(f"Bildirim gönderilemedi (user_id: {user_id}, product_id: {product_id}): {e}")
                     
                     update_product_status(product_id, current_status)
                 
@@ -379,3 +458,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
