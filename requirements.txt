@@ -25,11 +25,6 @@ asyncio
 logging
 datetime
 
-
-
-time
-typing
-
 # Ek yardımcı kütüphaneler
 
 schedule==1.2.0
