@@ -5,24 +5,33 @@ import sqlite3
 from datetime import datetime
 from typing import Dict, List
 
-import aiohttp
+# import aiohttp # Artık doğrudan aiohttp kullanmayacağımız için yorum satırı yapıldı veya kaldırılabilir.
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
-# Selenium importları
+# Selenium importları (RemoteWebDriver için gerekli olanlar)
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.remote.webdriver import WebDriver as RemoteWebDriver # ÖNEMLİ DEĞİŞİKLİK
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException, SessionNotCreatedException
 
 # Ortam değişkenlerinden bot tokenını al
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set.")
+
+# Railway'deki Browserless V1 hizmetinizin URL'si
+# Bu URL'yi Railway dashboard'unuzdaki Browserless servisinden alacaksınız.
+# Genellikle Browserless template'i ile oluşturduğunuz servisin "Variables" kısmında HOST veya BROWSERLESS_URL olarak bulunur.
+# Uygulamanızı Railway'e dağıtırken bu ortam değişkenini ayarlamanız GEREKİR.
+BROWSERLESS_URL = os.getenv("BROWSERLESS_URL")
+if not BROWSERLESS_URL:
+    raise ValueError("BROWSERLESS_URL environment variable not set. Please get it from your Railway Browserless service.")
+
 
 # Logging yapılandırması
 logging.basicConfig(
@@ -53,15 +62,13 @@ def init_database():
     conn.commit()
     conn.close()
 
-# Stok durumu kontrolü (Selenium ile güncellendi)
+# Stok durumu kontrolü (Selenium RemoteWebDriver ile güncellendi)
 class StockChecker:
     def __init__(self):
-        # Railway'de ChromeDriver'ı ve Chrome'u doğru bir şekilde başlatmak için
-        # headless-chromium ve chromedriver buildpack'leri kullanılacak.
-        # Bu yüzden PATH değişkeni üzerinden otomatik olarak bulunacaklar.
         self.chrome_options = Options()
-        self.chrome_options.add_argument('--headless') # Tarayıcıyı görünmez modda çalıştır
-        self.chrome_options.add_argument('--no-sandbox') # Güvenlik kısıtlamalarını kaldır (Railway için gerekli)
+        # Browserless zaten headless çalıştığı için burada tekrar '--headless' eklemeye gerek yok.
+        # Ancak güvenlik ve performans için diğer argümanları tutmak iyi bir fikir.
+        self.chrome_options.add_argument('--no-sandbox') # Güvenlik kısıtlamalarını kaldır (Linux konteynerler için gerekli)
         self.chrome_options.add_argument('--disable-dev-shm-usage') # /dev/shm kullanımını devre dışı bırak (Linux tabanlı sistemler için)
         self.chrome_options.add_argument('--disable-gpu') # GPU hızlandırmayı kapat (bazı ortamlar için gerekli)
         self.chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
@@ -74,22 +81,26 @@ class StockChecker:
                          out_of_stock_keywords: List[str] = None) -> Dict:
         driver = None
         try:
-            # ChromeDriver service'i PATH üzerinden otomatik bulunacak
-            service = Service() # executable_path belirtmeye gerek yok
-            driver = webdriver.Chrome(service=service, options=self.chrome_options)
+            # ÖNEMLİ DEĞİŞİKLİK: Local Selenium yerine Browserless üzerinden bağlan
+            # Browserless v1 template'i genellikle /webdriver uç noktasını sunar.
+            driver = RemoteWebDriver(
+                command_executor=f"{BROWSERLESS_URL}/webdriver",
+                options=self.chrome_options
+            )
+            
             driver.get(url)
 
             # Sayfanın tamamen yüklenmesini beklemek için daha akıllı stratejiler
-            # Örneğin, body elementinin veya en az bir H1/H2 başlığının görünmesini beklemek.
-            # Veya belirli bir fiyata veya sepete ekle düğmesine göre.
             try:
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.TAG_NAME, 'body'))
+                # Body elementinin veya belirli bir anahtar elementin görünmesini bekleyin.
+                # Zara için fiyat elementini beklemek iyi bir başlangıç olabilir.
+                WebDriverWait(driver, 25).until( # Bekleme süresini biraz artırdık
+                    EC.presence_of_element_located((By.TAG_NAME, 'body')) or
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main')) # Zara fiyat seçicisi
                 )
-                # Ek bir bekleme: JavaScript'in bitmesi için kısa bir süre bekleyebiliriz
-                await asyncio.sleep(3) # Çok kısa bir bekleme, bazen işe yarar
+                await asyncio.sleep(3) # Ek bir bekleme: JavaScript'in bitmesi için kısa bir süre bekleme
             except TimeoutException:
-                logger.warning(f"Initial page load timeout for {url}, trying to proceed.")
+                logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
 
             # Sayfanın tüm HTML'ini al (JavaScript ile oluşturulmuş haliyle)
             html = driver.page_source
@@ -107,15 +118,18 @@ class StockChecker:
         except TimeoutException:
             logger.error(f"Selenium Timeout waiting for page elements for {url}")
             return {'success': False, 'error': 'Timeout waiting for page elements or content.'}
+        except SessionNotCreatedException as e:
+            logger.error(f"Failed to create Selenium session with Browserless for {url}: {e}. Check BROWSERLESS_URL and Browserless logs.")
+            return {'success': False, 'error': f'Browserless bağlantı hatası: {e}'}
         except WebDriverException as e:
-            logger.error(f"Selenium WebDriver error accessing {url}: {e}")
-            return {'success': False, 'error': f'WebDriver error: {e}'}
+            logger.error(f"Selenium WebDriver error accessing {url} via Browserless: {e}")
+            return {'success': False, 'error': f'WebDriver hatası: {e}'}
         except Exception as e:
-            logger.error(f"General error checking stock with Selenium for {url}: {e}")
+            logger.error(f"General error checking stock with Selenium/Browserless for {url}: {e}", exc_info=True)
             return {'success': False, 'error': str(e)}
         finally:
             if driver:
-                driver.quit() # Tarayıcıyı kapatmayı unutma
+                driver.quit() # Tarayıcı oturumunu kapatmayı unutma
 
     def _analyze_stock_status(self, soup, selector=None, 
                             in_stock_keywords=None, out_of_stock_keywords=None):
@@ -125,9 +139,6 @@ class StockChecker:
         in_stock_keywords = [k.lower() for k in (in_stock_keywords or default_in_stock)]
         out_of_stock_keywords = [k.lower() for k in (out_of_stock_keywords or default_out_of_stock)]
         
-        # Daha spesifik Zara seçicileri (örnek olarak)
-        # Genellikle "Add to cart" butonu varlığı en iyi göstergedir.
-        # "Add to Bag" için data-qa-action="add-to-cart" içeren bir button veya div arayabiliriz.
         in_stock_elements_selectors = [
             'button[data-qa-action="add-to-cart"]', # Zara'nın sepet butonu
             'button.add-to-cart-button', 
@@ -136,7 +147,6 @@ class StockChecker:
             '.product-actions__add-to-cart-button' # Zara'da gördüğüm bir başka potansiyel
         ]
 
-        # "Out of stock" için yaygın seçiciler
         out_of_stock_elements_selectors = [
             '.product-availability__message--out-of-stock', # Zara'nın "stokta yok" mesajı
             '.availability-status--out-of-stock', 
@@ -204,7 +214,6 @@ class StockChecker:
             for element in elements:
                 text = element.get_text().strip()
                 if any(currency in text for currency in ['₺', '$', '€', 'TL', 'USD', 'EUR']) or any(char.isdigit() for char in text):
-                    # Sayı ve para birimi sembollerini temizlemeden orijinal metni döndür
                     return text
         
         # JSON-LD (Schema.org) verisinden fiyat çekme
@@ -227,6 +236,7 @@ class StockChecker:
 
         return 'N/A'
 
+# ... (Veritabanı işlemleri, bot komutları ve main fonksiyonu aynı kalacak)
 # Veritabanı işlemleri (değişmedi)
 def save_tracked_product(user_id: int, product_name: str, product_url: str, 
                         selector: str = None, in_stock_keywords: str = None, 
@@ -515,7 +525,8 @@ async def stock_monitoring_loop(application):
 
 def main():
     init_database()
-    application = Application.builder().token(BOT_TOKEN).build()
+    # JobQueue'yi etkinleştirmek için "job_queue=True" parametresi eklendi
+    application = Application.builder().token(BOT_TOKEN).job_queue(True).build() 
 
     # Komut handler'ları
     application.add_handler(CommandHandler("start", start))
@@ -536,5 +547,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
