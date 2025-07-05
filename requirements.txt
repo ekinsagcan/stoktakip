@@ -14,7 +14,7 @@ lxml==4.9.3
 
 # Veritabanı
 
-sqlite3
+
 
 # Async işlemler
 
