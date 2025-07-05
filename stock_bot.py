@@ -523,10 +523,13 @@ async def stock_monitoring_loop(application):
             logger.critical(f"Critical error in stock monitoring loop: {e}", exc_info=True)
             await asyncio.sleep(60)  # Ciddi bir hata durumunda 1 dakika bekle
 
+# ... (Diğer tüm kodlar aynı kalacak)
+
 def main():
     init_database()
-    # JobQueue'yi etkinleştirmek için "job_queue=True" parametresi eklendi
-    application = Application.builder().token(BOT_TOKEN).job_queue(True).build() 
+    # ÖNEMLİ DÜZELTME: JobQueue nesnesi oluşturularak job_queue metoduna verildi.
+    # JobQueue'yi etkinleştirmek için JobQueue() nesnesi parametre olarak verilmeli
+    application = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build() 
 
     # Komut handler'ları
     application.add_handler(CommandHandler("start", start))
