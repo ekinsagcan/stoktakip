@@ -1,4 +1,4 @@
 python-telegram-bot==13.15 # Veya kullandığınız Telegram bot kütüphanesinin tam versiyonu
-APScheduler==3.10.4        # Veya kullandığınız APScheduler versiyonu
+APScheduler==3.6.3        # Veya kullandığınız APScheduler versiyonu
 beautifulsoup4==4.12.3     # Veya kullandığınız BeautifulSoup versiyonu
 requests==2.32.3           # Veya kullandığınız requests versiyonu
