@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Dict, List, Set
 import aiohttp
@@ -12,18 +11,10 @@ import re
 import sqlite3
 import threading
 import time
-from dotenv import load_dotenv
 
-# Environment variables yükle
+# Bot token’ınızı buraya ekleyin
 
-load_dotenv()
-
-# Bot token’ını environment variable’dan al
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-
-if not BOT_TOKEN:
-raise ValueError(“BOT_TOKEN environment variable bulunamadı! Lütfen .env dosyasını oluşturun veya BOT_TOKEN’ı sistem environment variable’ı olarak tanımlayın.”)
+BOT_TOKEN = “7602002058:AAFLWeRECvcJ8gQl_c5cvJ9drXZCutJPEFQ”
 
 # Veritabanı kurulumu
 
