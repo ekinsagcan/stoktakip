@@ -89,20 +89,20 @@ class StockChecker:
                 driver.get(url)
 
                 try:
+                    # Body elementinin veya belirli bir anahtar elementin görünmesini bekleyin
                     WebDriverWait(driver, 25).until(
-                        EC.presence_of_element_located((By.TAG_NAME, 'body')) or
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
-                    await asyncio.sleep(3)
+                        EC.presence_of_element_located((By.TAG_NAME, 'body'))
+                    )
+                    await asyncio.sleep(3) # Ek bir bekleme: JavaScript'in bitmesi için kısa bir süre bekleme
                 except TimeoutException:
-                    logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
-
-                html = driver.page_source
-                soup = BeautifulSoup(html, 'html.parser')
-
-                stock_status = self._analyze_stock_status(soup, selector,
-                                                        in_stock_keywords,
-                                                        out_of_stock_keywords)
-                return {
+                    try:
+                        WebDriverWait(driver, 25).until(
+                           EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
+                        )
+                        await asyncio.sleep(3)
+                    except TimeoutException:
+                        logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
+            return {
                     'success': True,
                     'in_stock': stock_status['in_stock'],
                     'status_text': stock_status['status_text'],
