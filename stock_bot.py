@@ -5,6 +5,9 @@ import sqlite3
 from datetime import datetime
 from typing import Dict, List
 
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, JobQueue # JobQueue buraya eklendi
+
+
 # import aiohttp # Artık doğrudan aiohttp kullanmayacağımız için yorum satırı yapıldı veya kaldırılabilir.
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
