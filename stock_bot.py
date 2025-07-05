@@ -88,17 +88,24 @@ class StockChecker:
 
                 driver.get(url)
 
+                # ... (önceki kodlar) ...
+
                 try:
                     WebDriverWait(driver, 25).until(
                         EC.presence_of_element_located((By.TAG_NAME, 'body'))
+                    ) # <-- Buraya eklenen parantez
                     await asyncio.sleep(3)
                 except TimeoutException:
                     try:
                         WebDriverWait(driver, 25).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
+                        ) # <-- Buraya eklenen parantez
                         await asyncio.sleep(3)
                     except TimeoutException:
                         logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
+
+# ... (sonraki kodlar) ...
+
 
                 html = driver.page_source
                 soup = BeautifulSoup(html, 'html.parser')
