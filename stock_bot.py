@@ -89,20 +89,24 @@ class StockChecker:
                 driver.get(url)
 
                 try:
-                    # Body elementinin veya belirli bir anahtar elementin görünmesini bekleyin
                     WebDriverWait(driver, 25).until(
                         EC.presence_of_element_located((By.TAG_NAME, 'body'))
-                    )
-                    await asyncio.sleep(3) # Ek bir bekleme: JavaScript'in bitmesi için kısa bir süre bekleme
+                    await asyncio.sleep(3)
                 except TimeoutException:
                     try:
                         WebDriverWait(driver, 25).until(
-                           EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
-                        )
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
                         await asyncio.sleep(3)
                     except TimeoutException:
                         logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
-            return {
+
+                html = driver.page_source
+                soup = BeautifulSoup(html, 'html.parser')
+
+                stock_status = self._analyze_stock_status(soup, selector,
+                                                        in_stock_keywords,
+                                                        out_of_stock_keywords)
+                return {
                     'success': True,
                     'in_stock': stock_status['in_stock'],
                     'status_text': stock_status['status_text'],
@@ -363,9 +367,11 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"URL: {url[:60]}...\n\n"
 
     keyboard = [[InlineKeyboardButton("🗑 Ürün Sil", callback_data="delete_menu")]]
-    await update.message.reply_text(message,
-                                  reply_markup=InlineKeyboardMarkup(keyboard),
-                                  parse_mode='Markdown')
+    await update.message.reply_text(
+        message,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 async def delete_product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -381,8 +387,10 @@ async def delete_product_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         for product_id, _, name, *_ in products
     ]
     keyboard.append([InlineKeyboardButton("« Geri", callback_data="back_to_list")])
-    await query.edit_message_text("🗑 Silinecek ürünü seçin:",
-                                reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(
+        "🗑 Silinecek ürünü seçin:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -479,7 +487,7 @@ async def stock_monitoring_loop(application):
                             f"🏷 **{name}**\n"
                             f"💰 Fiyat: {result['price']}\n"
                             f"🔗 [Ürüne Git]({url})\n\n"
-                            f"⏰ {datetime.now().strftime('%d.%m.%m %H:%M')}"
+                            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
                         )
                         try:
                             await application.bot.send_message(
