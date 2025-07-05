@@ -148,14 +148,14 @@ def _extract_price(self, soup):
 
 def save_tracked_product(user_id: int, product_name: str, product_url: str, selector: str = None,
 in_stock_keywords: str = None, out_of_stock_keywords: str = None):
-conn = sqlite3.connect(‘stock_tracker.db’)
+conn = sqlite3.connect('stock_tracker.db')
 cursor = conn.cursor()
 try:
-cursor.execute(’’’
+cursor.execute('''
 INSERT OR REPLACE INTO tracked_products
 (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, last_status)
 VALUES (?, ?, ?, ?, ?, ?, ?)
-‘’’, (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, ‘unknown’))
+''', (user_id, product_name, product_url, selector, in_stock_keywords, out_of_stock_keywords, ‘unknown’))
 conn.commit()
 return True
 except Exception as e:
@@ -165,7 +165,7 @@ finally:
 conn.close()
 
 def get_tracked_products(user_id: int = None):
-conn = sqlite3.connect(‘stock_tracker.db’)
+conn = sqlite3.connect('stock_tracker.db')
 cursor = conn.cursor()
 
 ```
@@ -180,16 +180,16 @@ return products
 ```
 
 def update_product_status(product_id: int, status: str):
-conn = sqlite3.connect(‘stock_tracker.db’)
+conn = sqlite3.connect('stock_tracker.db')
 cursor = conn.cursor()
-cursor.execute(‘UPDATE tracked_products SET last_status = ? WHERE id = ?’, (status, product_id))
+cursor.execute('UPDATE tracked_products SET last_status = ? WHERE id = ?', (status, product_id))
 conn.commit()
 conn.close()
 
 def delete_tracked_product(user_id: int, product_id: int):
 conn = sqlite3.connect(‘stock_tracker.db’)
 cursor = conn.cursor()
-cursor.execute(‘DELETE FROM tracked_products WHERE id = ? AND user_id = ?’, (product_id, user_id))
+cursor.execute('DELETE FROM tracked_products WHERE id = ? AND user_id = ?', (product_id, user_id))
 conn.commit()
 conn.close()
 
