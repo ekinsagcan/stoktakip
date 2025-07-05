@@ -18,16 +18,16 @@ def init_database():
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS tracked_products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        product_name TEXT,
-        product_url TEXT,
+        user_id INTEGER NOT NULL,
+        product_name TEXT NOT NULL,
+        product_url TEXT NOT NULL,
         selector TEXT,
         in_stock_keywords TEXT,
         out_of_stock_keywords TEXT,
         last_status TEXT,
+        last_checked TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, product_url)
-    )
     ''')
     conn.commit()
     conn.close()
@@ -142,7 +142,8 @@ def get_tracked_products(user_id: int = None):
 def update_product_status(product_id: int, status: str):
     conn = sqlite3.connect('stock_tracker.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE tracked_products SET last_status = ? WHERE id = ?', (status, product_id))
+    cursor.execute('UPDATE tracked_products SET last_status = ?, last_checked = CURRENT_TIMESTAMP WHERE id = ?', 
+                  (status, product_id))
     conn.commit()
     conn.close()
 
@@ -220,9 +221,10 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "📋 **Takip Edilen Ürünler:**\n\n"
     for product in products:
-        product_id, _, name, url, _, _, _, last_status, _ = product
+        product_id, _, name, url, _, _, _, last_status, last_checked, _ = product
         status = "✅" if last_status == 'in_stock' else "⚠" if last_status == 'out_of_stock' else "❓"
-        message += f"{status} {name}\nID: {product_id}\nURL: {url[:50]}...\n\n"
+        last_checked_str = datetime.strptime(last_checked, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M') if last_checked else "Bilinmiyor"
+        message += f"{status} {name}\nID: {product_id}\nSon kontrol: {last_checked_str}\nURL: {url[:50]}...\n\n"
 
     keyboard = [[InlineKeyboardButton("🗑 Ürün Sil", callback_data="delete_menu")]]
     await update.message.reply_text(message, 
@@ -263,7 +265,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     checker = StockChecker()
     
     for product in products:
-        product_id, _, name, url, selector, in_stock_kw, out_of_stock_kw, _, _ = product
+        product_id, _, name, url, selector, in_stock_kw, out_of_stock_kw, _, _, _ = product
         result = await checker.check_stock(
             url, 
             selector,
@@ -276,6 +278,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"{status} {name}\nDurum: {result['status_text']}\nFiyat: {result['price']}"
             )
+            update_product_status(product_id, 'in_stock' if result['in_stock'] else 'out_of_stock')
         else:
             await update.message.reply_text(f"⚠ {name} - Kontrol başarısız: {result['error']}")
 
@@ -290,8 +293,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     • /sil - Ürün sil
     • /durum - Anlık stok kontrolü
 
-    **Örnek:**
-    /ekle iPhone https://example.com/iphone
+    **Gelişmiş Kullanım:**
+    /ekle <ürün_adı> <url> <css_selector> <stok_kelimeleri> <stokta_olmayan_kelimeler>
+    Örnek: /ekle iPhone https://example.com .stock-status "stokta,var" "tükendi,yok"
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -310,7 +314,7 @@ async def stock_monitoring_loop(application):
         try:
             products = get_tracked_products()
             for product in products:
-                product_id, user_id, name, url, selector, in_stock_kw, out_of_stock_kw, last_status, _ = product
+                product_id, user_id, name, url, selector, in_stock_kw, out_of_stock_kw, last_status, _, _ = product
                 result = await checker.check_stock(
                     url, 
                     selector,
@@ -321,17 +325,31 @@ async def stock_monitoring_loop(application):
                 if result['success']:
                     current_status = 'in_stock' if result['in_stock'] else 'out_of_stock'
                     if current_status != last_status and current_status == 'in_stock':
-                        message = f"🚀 **STOK GELDİ!**\n\n🏷 {name}\n💰 {result['price']}\n🔗 {url}"
+                        message = (
+                            f"🚀 **STOK GELDİ!**\n\n"
+                            f"🏷 **{name}**\n"
+                            f"💰 Fiyat: {result['price']}\n"
+                            f"🔗 [Ürüne Git]({url})\n\n"
+                            f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                        )
                         try:
-                            await application.bot.send_message(user_id, message, parse_mode='Markdown')
+                            await application.bot.send_message(
+                                chat_id=user_id,
+                                text=message,
+                                parse_mode='Markdown',
+                                disable_web_page_preview=True
+                            )
                         except Exception as e:
-                            logging.error(f"Bildirim hatası: {e}")
+                            logging.error(f"Bildirim gönderilemedi: {e}")
+                    
                     update_product_status(product_id, current_status)
-                await asyncio.sleep(2)
-            await asyncio.sleep(300)
+                
+                await asyncio.sleep(2)  # Her ürün arasında bekleme
+            
+            await asyncio.sleep(300)  # 5 dakika bekleme
         except Exception as e:
-            logging.error(f"Stok kontrol hatası: {e}")
-            await asyncio.sleep(60)
+            logging.error(f"Stok kontrol döngüsü hatası: {e}")
+            await asyncio.sleep(60)  # Hata durumunda 1 dakika bekle
 
 def main():
     logging.basicConfig(
@@ -342,13 +360,17 @@ def main():
     init_database()
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Komut handler'ları
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ekle", add_product))
     application.add_handler(CommandHandler("liste", list_products))
     application.add_handler(CommandHandler("durum", check_status))
     application.add_handler(CommandHandler("help", help_command))
+    
+    # Callback handler
     application.add_handler(CallbackQueryHandler(button_callback))
 
+    # Stok kontrol döngüsünü başlat
     loop = asyncio.get_event_loop()
     loop.create_task(stock_monitoring_loop(application))
 
