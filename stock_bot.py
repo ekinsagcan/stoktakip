@@ -21,16 +21,17 @@ def init_database():
     cursor = conn.cursor()
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS tracked_products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    product_name TEXT,
-    product_url TEXT,
-    selector TEXT,
-    in_stock_keywords TEXT,
-    out_of_stock_keywords TEXT,
-    last_status TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, product_url)
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        product_name TEXT,
+        product_url TEXT,
+        selector TEXT,
+        in_stock_keywords TEXT,
+        out_of_stock_keywords TEXT,
+        last_status TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, product_url)
+    )
     ''')
     conn.commit()
     conn.close()
