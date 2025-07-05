@@ -34,7 +34,7 @@ last_status TEXT,
 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 UNIQUE(user_id, product_url)
 )
-‘’’)
+''')
 conn.commit()
 conn.close()
 
