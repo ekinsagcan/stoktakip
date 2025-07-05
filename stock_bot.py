@@ -7,10 +7,8 @@ from typing import Dict, List
 
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-# ÖNEMLİ DEĞİŞİKLİK: JobQueue buraya eklendi!
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, JobQueue
 
-# Selenium importları
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.remote.webdriver import WebDriver as RemoteWebDriver
@@ -19,20 +17,16 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, SessionNotCreatedException
 
-# Ortam değişkenlerinden bot tokenını al
+# Ortam değişkenlerini al
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set.")
 
-# Railway'deki Browserless V1 hizmetinizin URL'si
-BROWSERLESS_URL = os.getenv("BROWSERLESS_URL")
-if not BROWSERLESS_URL:
-    raise ValueError("BROWSERLESS_URL environment variable not set. Please get it from your Railway Browserless service.")
-
-# YENİ EKLENEN KOD: Browserless API Anahtarını Ortam Değişkeninden Al
+# Browserless URL ve API anahtarını al
+BROWSERLESS_URL = os.getenv("BROWSERLESS_URL", "https://chrome.browserless.io")
 BROWSERLESS_API_KEY = os.getenv("BROWSERLESS_API_KEY")
 if not BROWSERLESS_API_KEY:
-    raise ValueError("BROWSERLESS_API_KEY environment variable not set. This is required for Browserless authentication.")
+    raise ValueError("BROWSERLESS_API_KEY environment variable not set.")
 
 # Logging yapılandırması
 logging.basicConfig(
@@ -63,74 +57,79 @@ def init_database():
     conn.commit()
     conn.close()
 
-# Stok durumu kontrolü (Selenium RemoteWebDriver ile güncellendi)
 class StockChecker:
     def __init__(self):
         self.chrome_options = Options()
-        # Browserless zaten headless çalıştığı için burada tekrar '--headless' eklemeye gerek yok.
-        # Ancak güvenlik ve performans için diğer argümanları tutmak iyi bir fikir.
-        self.chrome_options.add_argument('--no-sandbox') # Güvenlik kısıtlamalarını kaldır (Linux konteynerler için gerekli)
-        self.chrome_options.add_argument('--disable-dev-shm-usage') # /dev/shm kullanımını devre dışı bırak (Linux tabanlı sistemler için)
-        self.chrome_options.add_argument('--disable-gpu') # GPU hızlandırmayı kapat (bazı ortamlar için gerekli)
+        self.chrome_options.add_argument('--no-sandbox')
+        self.chrome_options.add_argument('--disable-dev-shm-usage')
+        self.chrome_options.add_argument('--disable-gpu')
         self.chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
-        self.chrome_options.add_argument('--window-size=1920,1080') # Pencere boyutu (headless için önemli)
-        self.chrome_options.add_argument('--ignore-certificate-errors') # Sertifika hatalarını yok say
-        self.chrome_options.add_argument('--allow-running-insecure-content') # Güvenli olmayan içeriklere izin ver
+        self.chrome_options.add_argument('--window-size=1920,1080')
+        self.chrome_options.add_argument('--ignore-certificate-errors')
+        self.chrome_options.add_argument('--allow-running-insecure-content')
 
     async def check_stock(self, url: str, selector: str = None,
                          in_stock_keywords: List[str] = None,
                          out_of_stock_keywords: List[str] = None) -> Dict:
         driver = None
-        try:
-            # ÖNEMLİ DEĞİŞİKLİK: command_executor URL'ine API anahtarını ekliyoruz
-            # API anahtarı, Browserless'e `?token=YOUR_API_KEY` şeklinde query parametresi olarak gönderilir.
-            driver = RemoteWebDriver(
-                command_executor=f"{BROWSERLESS_URL}/webdriver?token={BROWSERLESS_API_KEY}", # BU SATIR DEĞİŞTİ
-                options=self.chrome_options
-            )
-
-            driver.get(url)
-
-            # Sayfanın tamamen yüklenmesini beklemek için daha akıllı stratejiler
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
             try:
-                # Body elementinin veya belirli bir anahtar elementin görünmesini bekleyin.
-                # Zara için fiyat elementini beklemek iyi bir başlangıç olabilir.
-                WebDriverWait(driver, 25).until( # Bekleme süresini biraz artırdık
-                    EC.presence_of_element_located((By.TAG_NAME, 'body')) or
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main')) # Zara fiyat seçicisi
+                webdriver_url = f"{BROWSERLESS_URL}/webdriver"
+                if BROWSERLESS_API_KEY:
+                    webdriver_url += f"?token={BROWSERLESS_API_KEY}"
+                
+                driver = RemoteWebDriver(
+                    command_executor=webdriver_url,
+                    options=self.chrome_options
                 )
-                await asyncio.sleep(3) # Ek bir bekleme: JavaScript'in bitmesi için kısa bir süre bekleme
+
+                driver.get(url)
+
+                try:
+                    WebDriverWait(driver, 25).until(
+                        EC.presence_of_element_located((By.TAG_NAME, 'body')) or
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'span.money-amount__main'))
+                    await asyncio.sleep(3)
+                except TimeoutException:
+                    logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
+
+                html = driver.page_source
+                soup = BeautifulSoup(html, 'html.parser')
+
+                stock_status = self._analyze_stock_status(soup, selector,
+                                                        in_stock_keywords,
+                                                        out_of_stock_keywords)
+                return {
+                    'success': True,
+                    'in_stock': stock_status['in_stock'],
+                    'status_text': stock_status['status_text'],
+                    'price': stock_status.get('price', 'N/A')
+                }
+                
+            except SessionNotCreatedException as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    return {
+                        'success': False,
+                        'error': f'Browserless connection failed after {max_retries} attempts: {str(e)}'
+                    }
+                await asyncio.sleep(retry_delay)
+                
             except TimeoutException:
-                logger.warning(f"Initial page load timeout for {url}, trying to proceed with current DOM.")
-
-            # Sayfanın tüm HTML'ini al (JavaScript ile oluşturulmuş haliyle)
-            html = driver.page_source
-            soup = BeautifulSoup(html, 'html.parser')
-
-            stock_status = self._analyze_stock_status(soup, selector,
-                                                    in_stock_keywords,
-                                                    out_of_stock_keywords)
-            return {
-                'success': True,
-                'in_stock': stock_status['in_stock'],
-                'status_text': stock_status['status_text'],
-                'price': stock_status.get('price', 'N/A')
-            }
-        except TimeoutException:
-            logger.error(f"Selenium Timeout waiting for page elements for {url}")
-            return {'success': False, 'error': 'Timeout waiting for page elements or content.'}
-        except SessionNotCreatedException as e:
-            logger.error(f"Failed to create Selenium session with Browserless for {url}: {e}. Check BROWSERLESS_URL and Browserless logs.")
-            return {'success': False, 'error': f'Browserless bağlantı hatası: {e}'}
-        except WebDriverException as e:
-            logger.error(f"Selenium WebDriver error accessing {url} via Browserless: {e}")
-            return {'success': False, 'error': f'WebDriver hatası: {e}'}
-        except Exception as e:
-            logger.error(f"General error checking stock with Selenium/Browserless for {url}: {e}", exc_info=True)
-            return {'success': False, 'error': str(e)}
-        finally:
-            if driver:
-                driver.quit() # Tarayıcı oturumunu kapatmayı unutma
+                logger.error(f"Selenium Timeout waiting for page elements for {url}")
+                return {'success': False, 'error': 'Timeout waiting for page elements or content.'}
+            except WebDriverException as e:
+                logger.error(f"Selenium WebDriver error accessing {url} via Browserless: {e}")
+                return {'success': False, 'error': f'WebDriver hatası: {e}'}
+            except Exception as e:
+                logger.error(f"General error checking stock with Selenium/Browserless for {url}: {e}", exc_info=True)
+                return {'success': False, 'error': str(e)}
+            finally:
+                if driver:
+                    driver.quit()
 
     def _analyze_stock_status(self, soup, selector=None,
                             in_stock_keywords=None, out_of_stock_keywords=None):
@@ -141,26 +140,25 @@ class StockChecker:
         out_of_stock_keywords = [k.lower() for k in (out_of_stock_keywords or default_out_of_stock)]
 
         in_stock_elements_selectors = [
-            'button[data-qa-action="add-to-cart"]', # Zara'nın sepet butonu
+            'button[data-qa-action="add-to-cart"]',
             'button.add-to-cart-button',
             'button[aria-label*="Add to cart"]',
             'button[title*="Sepete Ekle"]',
-            '.product-actions__add-to-cart-button' # Zara'da gördüğüm bir başka potansiyel
+            '.product-actions__add-to-cart-button'
         ]
 
         out_of_stock_elements_selectors = [
-            '.product-availability__message--out-of-stock', # Zara'nın "stokta yok" mesajı
+            '.product-availability__message--out-of-stock',
             '.availability-status--out-of-stock',
             '.stock-error-message',
-            '.size-selector__size--out-of-stock', # Beden seçici içinde stokta yok bilgisi
+            '.size-selector__size--out-of-stock',
             '.stock-info-text',
-            '[data-qa-action="unavailable-product"]', # Zara'da stokta olmayan ürün için
-            'div.product-actions__disabled-message' # Zara'da "tükendi" mesajı için
+            '[data-qa-action="unavailable-product"]',
+            'div.product-actions__disabled-message'
         ]
 
-        # Element bazlı kontrol (daha güvenilir)
         for sel in out_of_stock_elements_selectors:
-            if soup.select_one(sel): # Sadece elementin varlığına bakıyoruz
+            if soup.select_one(sel):
                 text = soup.select_one(sel).get_text().lower()
                 if any(k in text for k in out_of_stock_keywords):
                     price = self._extract_price(soup)
@@ -173,8 +171,6 @@ class StockChecker:
                     price = self._extract_price(soup)
                     return {'in_stock': True, 'status_text': f'Stokta mevcut (Element: {sel}, Metin: {text[:30]}...)', 'price': price}
 
-
-        # Genel sayfa metni kontrolü (daha az güvenilir)
         page_text = soup.get_text().lower()
         target_text = page_text
         if selector:
@@ -192,7 +188,6 @@ class StockChecker:
             price = self._extract_price(soup)
             return {'in_stock': True, 'status_text': 'Stokta mevcut (Genel sayfa metninde bulundu)', 'price': price}
 
-        # Son çare: Fiyat varsa muhtemelen stokta varsay
         price = self._extract_price(soup)
         if price != 'N/A':
             return {'in_stock': True, 'status_text': 'Muhtemelen stokta (Fiyat bulundu ama kesin değil)', 'price': price}
@@ -201,13 +196,13 @@ class StockChecker:
 
     def _extract_price(self, soup):
         price_selectors = [
-            'span.money-amount__main', # Zara için temel fiyat seçici
+            'span.money-amount__main',
             '[data-qa-action="product-price"]',
             '.price', '.fiyat', '[class*="price"]', '[class*="fiyat"]',
             '.amount', '.cost', '[data-testid*="price"]',
             'div.product-price span',
-            'span[itemprop="price"]', # Schema.org markup
-            'meta[itemprop="price"]' # Schema.org markup in meta tag
+            'span[itemprop="price"]',
+            'meta[itemprop="price"]'
         ]
 
         for selector in price_selectors:
@@ -217,12 +212,11 @@ class StockChecker:
                 if any(currency in text for currency in ['₺', '$', '€', 'TL', 'USD', 'EUR']) or any(char.isdigit() for char in text):
                     return text
 
-        # JSON-LD (Schema.org) verisinden fiyat çekme
         try:
             import json
             for script in soup.find_all('script', type='application/ld+json'):
                 data = json.loads(script.string)
-                if isinstance(data, list): # Bazen JSON-LD bir liste olabilir
+                if isinstance(data, list):
                     for item in data:
                         if item.get('@type') == 'Product' and item.get('offers') and item['offers'].get('price'):
                             price = item['offers']['price']
@@ -237,7 +231,6 @@ class StockChecker:
 
         return 'N/A'
 
-# Veritabanı işlemleri (değişmedi)
 def save_tracked_product(user_id: int, product_name: str, product_url: str,
                         selector: str = None, in_stock_keywords: str = None,
                         out_of_stock_keywords: str = None):
@@ -284,7 +277,6 @@ def delete_tracked_product(user_id: int, product_id: int):
     conn.commit()
     conn.close()
 
-# Bot komutları (küçük iyileştirmelerle)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
     🎉 **Stok Takip Botu'na Hoş Geldiniz!**
@@ -350,7 +342,7 @@ async def add_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text(f"⛔ Kontrol başarısız: {result['error']}", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Kontrol başarısız: {result['error']}", parse_mode='Markdown')
     else:
         await update.message.reply_text("⚠ Ürün eklenirken hata oluştu veya bu URL zaten takip ediliyor.", parse_mode='Markdown')
 
@@ -368,7 +360,7 @@ async def list_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"{status_emoji} **{name}**\n"
         message += f"ID: `{product_id}`\n"
         message += f"Son kontrol: {last_checked_str}\n"
-        message += f"URL: {url[:60]}...\n\n" # URL'yi biraz daha uzun gösterebiliriz
+        message += f"URL: {url[:60]}...\n\n"
 
     keyboard = [[InlineKeyboardButton("🗑 Ürün Sil", callback_data="delete_menu")]]
     await update.message.reply_text(message,
@@ -427,9 +419,9 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             update_product_status(product_id, 'in_stock' if result['in_stock'] else 'out_of_stock')
         else:
-            await update.message.reply_text(f"⛔ **{name}** - Kontrol başarısız: {result['error']}", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ **{name}** - Kontrol başarısız: {result['error']}", parse_mode='Markdown')
 
-        await asyncio.sleep(1) # Her kontrol arasında kısa bekleme
+        await asyncio.sleep(1)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -441,25 +433,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     • `/start`: Botu başlatır ve hoş geldin mesajını gösterir.
     • `/ekle <ürün_adı> <url>`: Yeni bir ürün eklemenizi sağlar. Örneğin: `/ekle Telefon https://www.samsung.com/telefon`
        * *Gelişmiş Kullanım*: `/ekle <ürün_adı> <url> [css_selector] [stok_kelimeleri_virgülle_ayrılmış] [stokta_olmayan_kelimeleri_virgülle_ayrılmış]`
-         * `css_selector`: Ürünün stok durumunu veya fiyatını içeren belirli bir HTML elementi. Örneğin: `.stock-status` veya `div#product-info`
-         * `stok_kelimeleri`: Stokta olduğunu gösteren virgülle ayrılmış kelimeler. Örneğin: `"stokta,mevcut,sepete ekle"`
-         * `stokta_olmayan_kelimeler`: Stokta olmadığını gösteren virgülle ayrılmış kelimeler. Örneğin: `"tükendi,stokta yok,gelince haber ver"`
-         * *Bu opsiyonel parametreler, botun sitenin yapısına göre daha doğru sonuçlar vermesini sağlar.*
     • `/liste`: Takip ettiğiniz tüm ürünleri listeler, ID'leri ve son kontrol durumları ile birlikte.
     • `/sil`: Takip listenizden bir ürünü ID'sine göre silmenizi sağlar. `/liste` komutundan ID'yi alabilirsiniz.
     • `/durum`: Botun anlık olarak tüm takip ettiğiniz ürünlerin stok durumunu kontrol etmesini sağlar.
     • `/help`: Bu yardım mesajını gösterir.
-
-    **Otomatik Takip:**
-    Bot, eklediğiniz ürünleri arka planda düzenli aralıklarla otomatik olarak kontrol eder. Bir ürünün "stokta yok" durumundan "stokta var" durumuna geçtiğini tespit ettiğinde size anında bildirim gönderir.
-
-    Herhangi bir sorun yaşarsanız veya yeni bir özellik öneriniz olursa lütfen bana bildirin!
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Query'yi cevapla, yoksa kullanıcıda "yükleniyor" kalır
+    await query.answer()
     if query.data == "delete_menu":
         await delete_product_menu(update, context)
     elif query.data.startswith("delete_"):
@@ -490,7 +473,6 @@ async def stock_monitoring_loop(application):
                 if result['success']:
                     current_status = 'in_stock' if result['in_stock'] else 'out_of_stock'
 
-                    # Sadece durum değiştiyse ve "stokta yok"tan "stokta var"a geçişse bildirim gönder
                     if current_status != last_status and current_status == 'in_stock':
                         message = (
                             f"🚀 **STOK GELDİ!**\n\n"
@@ -515,37 +497,30 @@ async def stock_monitoring_loop(application):
                 else:
                     logger.error(f"Stock check failed for product ID: {product_id} ({name}): {result['error']}")
 
-                await asyncio.sleep(5)  # Her ürün kontrolü arasında 5 saniye bekle
+                await asyncio.sleep(5)
 
             logger.info("Finished one full product check loop. Sleeping for 5 minutes before next loop.")
-            await asyncio.sleep(300)  # Tüm ürünler kontrol edildikten sonra 5 dakika bekle
+            await asyncio.sleep(300)
         except Exception as e:
             logger.critical(f"Critical error in stock monitoring loop: {e}", exc_info=True)
-            await asyncio.sleep(60)  # Ciddi bir hata durumunda 1 dakika bekle
+            await asyncio.sleep(60)
 
 def main():
     init_database()
-    # JobQueue'yi etkinleştirmek için JobQueue() nesnesi parametre olarak verilmeli
     application = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).build()
 
-    # Komut handler'ları
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("ekle", add_product))
     application.add_handler(CommandHandler("liste", list_products))
     application.add_handler(CommandHandler("durum", check_status))
     application.add_handler(CommandHandler("help", help_command))
 
-    # Callback handler
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    # Stok kontrol döngüsünü başlat
-    # Arka plan görevi olarak çalıştırılmalı
-    application.job_queue.run_once(lambda context: asyncio.create_task(stock_monitoring_loop(application)), 1) # Bot başlatıldıktan hemen sonra başlat
+    application.job_queue.run_once(lambda context: asyncio.create_task(stock_monitoring_loop(application)), 1)
 
     logger.info("🎉 Stok Takip Botu başlatılıyor...")
     application.run_polling(poll_interval=1.0)
 
 if __name__ == "__main__":
     main()
-
-
