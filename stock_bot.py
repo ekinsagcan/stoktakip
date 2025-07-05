@@ -1,68 +1,76 @@
 import os
-import threading
-import time
+import asyncio
 import requests
 from bs4 import BeautifulSoup
-from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 if not TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
+    raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing!")
 
-updater = Updater(token=TOKEN, use_context=True)
-dispatcher = updater.dispatcher
+# Kullanıcı takip listesi: { user_id: [ { "url": ..., "notified": bool }, ... ] }
+user_tracking = {}
 
-# Her kullanıcı için birden çok ürün takibi
-user_tracking = {}  # {chat_id: [ {url: ..., notified: False}, ... ]}
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Hoş geldin! Zara ürün linkini gönder, ben stoğa girince haber vereyim. Birden fazla ürün gönderebilirsin."
+    )
 
-def check_stock(url):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    if "zara.com" in text:
+        if user_id not in user_tracking:
+            user_tracking[user_id] = []
+
+        already_added = any(item["url"] == text for item in user_tracking[user_id])
+        if already_added:
+            await update.message.reply_text("🔁 Bu ürünü zaten takip ediyorsun.")
+        else:
+            user_tracking[user_id].append({"url": text, "notified": False})
+            await update.message.reply_text("✅ Ürün takip listene eklendi!")
+    else:
+        await update.message.reply_text("⛔ Lütfen geçerli bir Zara ürün linki gönder.")
+
+def check_stock(url: str) -> bool:
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers)
+        r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, 'html.parser')
-        if "Tükendi" in soup.text or "Stokta yok" in soup.text:
-            return False
-        return True
+        return not ("Tükendi" in soup.text or "Stokta yok" in soup.text)
     except Exception as e:
         print(f"[HATA] {url}: {e}")
         return False
 
-def background_stock_checker():
+async def background_stock_checker(application):
     while True:
-        for chat_id, items in user_tracking.items():
+        for user_id, items in user_tracking.items():
             for item in items:
-                url = item["url"]
-                in_stock = check_stock(url)
+                in_stock = check_stock(item["url"])
                 if in_stock and not item["notified"]:
-                    updater.bot.send_message(chat_id=chat_id, text=f"🎉 Stoğa girdi!\n{url}")
+                    await application.bot.send_message(
+                        chat_id=user_id,
+                        text=f"🎉 Stoğa girdi!\n{item['url']}"
+                    )
                     item["notified"] = True
                 elif not in_stock:
                     item["notified"] = False
-        time.sleep(300)  # 5 dakika
+        await asyncio.sleep(300)  # 5 dakika
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("👋 Hoş geldin! Zara ürün linkini gönder. İstediğin kadar link gönderebilirsin.")
+async def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-def handle_message(update: Update, context: CallbackContext):
-    chat_id = update.message.chat_id
-    text = update.message.text.strip()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    if "zara.com" in text:
-        if chat_id not in user_tracking:
-            user_tracking[chat_id] = []
-        if any(item["url"] == text for item in user_tracking[chat_id]):
-            update.message.reply_text("🔁 Bu ürünü zaten takip ediyorsun.")
-        else:
-            user_tracking[chat_id].append({"url": text, "notified": False})
-            update.message.reply_text("✅ Ürün takip listene eklendi!")
-    else:
-        update.message.reply_text("⛔ Lütfen geçerli bir Zara ürün linki gönder.")
+    # Arkaplan stoğu kontrol döngüsünü başlat
+    app.job_queue.run_repeating(lambda _: asyncio.create_task(background_stock_checker(app)), interval=300, first=0)
 
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    print("Bot başlatıldı...")
+    await app.run_polling()
 
-if __name__ == '__main__':
-    threading.Thread(target=background_stock_checker, daemon=True).start()
-    updater.start_polling()
-    updater.idle()
+if __name__ == "__main__":
+    asyncio.run(main())
