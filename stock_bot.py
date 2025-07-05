@@ -14,7 +14,7 @@ import time
 
 # Bot token’ınızı buraya ekleyin
 
-BOT_TOKEN = “YOUR_BOT_TOKEN_HERE”
+BOT_TOKEN = “7602002058:AAFLWeRECvcJ8gQl_c5cvJ9drXZCutJPEFQ”
 
 # Veritabanı kurulumu
 
